@@ -1,33 +1,73 @@
 import Observation
 import SwiftUI
 
+private enum TaskDetailTab: String, CaseIterable, Identifiable {
+    case workspace
+    case execution
+    case governance
+    case collaboration
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .workspace: return "工作区配置"
+        case .execution: return "执行"
+        case .governance: return "治理"
+        case .collaboration: return "协作"
+        }
+    }
+}
+
 struct TaskDetailView: View {
     @Bindable var viewModel: DashboardViewModel
     let task: WorkTask
 
+    @State private var selectedTab: TaskDetailTab = .workspace
     @State private var draftTitle: String = ""
     @State private var draftGoal: String = ""
     @State private var draftConstraints: String = ""
     @State private var draftAcceptance: String = ""
     @State private var draftRisks: String = ""
+    @State private var draftRepositoryPath: String = ""
+    @State private var draftBranchName: String = ""
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                PhaseTimelineView(phase: task.phase, history: task.phaseHistory)
-                StrategyPanelView(viewModel: viewModel)
-                metadataEditor
-                validationPanel
-                keyboardHintsPanel
-                DecisionCenterView(viewModel: viewModel, task: task)
-                AgentGridView(viewModel: viewModel, task: task)
-                BudgetPanelView(task: task, warnings: viewModel.budgetWarnings(for: task.id))
-                RecoveryPanelView(viewModel: viewModel, task: task)
-                SummaryPanelView(viewModel: viewModel, task: task)
-                LogPanelView(logText: viewModel.combinedLog(for: task.id))
+        VStack(alignment: .leading, spacing: 12) {
+            header
+
+            Picker("视图", selection: $selectedTab) {
+                ForEach(TaskDetailTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
+                }
             }
-            .padding(.bottom, 48)
+            .pickerStyle(.segmented)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch selectedTab {
+                    case .workspace:
+                        quickStartPanel
+                        StrategyPanelView(viewModel: viewModel)
+                        CLIRuntimePanelView(viewModel: viewModel)
+                        sourceContextEditor
+                        metadataEditor
+                        validationPanel
+                    case .execution:
+                        PhaseTimelineView(phase: task.phase, history: task.phaseHistory)
+                        AgentGridView(viewModel: viewModel, task: task)
+                        BudgetPanelView(task: task, warnings: viewModel.budgetWarnings(for: task.id))
+                        LogPanelView(logText: viewModel.combinedLog(for: task.id))
+                    case .governance:
+                        DecisionCenterView(viewModel: viewModel, task: task)
+                        RecoveryPanelView(viewModel: viewModel, task: task)
+                        SummaryPanelView(viewModel: viewModel, task: task)
+                    case .collaboration:
+                        CollaborationPanelView(viewModel: viewModel, task: task)
+                    }
+                }
+                .padding(.bottom, 72)
+            }
         }
         .onAppear(perform: syncDraft)
         .onChange(of: task.id) { _, _ in syncDraft() }
@@ -36,52 +76,99 @@ struct TaskDetailView: View {
 
     private var header: some View {
         HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(task.title)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
                 Text(task.goal)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(task.status.displayTitle)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(task.status.tintColor.opacity(0.18), in: Capsule())
+                    Text(task.lane.title)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(task.lane.tintColor.opacity(0.18), in: Capsule())
+                }
             }
             Spacer()
-            VStack(alignment: .trailing, spacing: 8) {
-                Text(task.status.displayTitle)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
-                    .background(task.status.tintColor.opacity(0.2), in: Capsule())
-
-                HStack(spacing: 8) {
-                    Button("开始") {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            viewModel.startTask(task.id)
-                        }
+            HStack(spacing: 8) {
+                Button("开始") {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        viewModel.startTask(task.id)
                     }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut("r", modifiers: [.command])
-                    Button("暂停") {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            viewModel.pauseTask(task.id)
-                        }
-                    }
-                        .buttonStyle(.bordered)
-                        .keyboardShortcut(".", modifiers: [.command])
-                    Button("继续") {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            viewModel.resumeTask(task.id)
-                        }
-                    }
-                        .buttonStyle(.bordered)
-                        .keyboardShortcut("u", modifiers: [.command])
-                    Button("推进阶段") {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            viewModel.advanceSelectedTaskPhase()
-                        }
-                    }
-                        .buttonStyle(.bordered)
-                        .keyboardShortcut("p", modifiers: [.command, .shift])
                 }
-                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("r", modifiers: [.command])
+
+                Button("暂停") {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        viewModel.pauseTask(task.id)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(".", modifiers: [.command])
+
+                Button("继续") {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        viewModel.resumeTask(task.id)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("u", modifiers: [.command])
+
+                Button("推进阶段") {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        viewModel.advanceSelectedTaskPhase()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
+            .controlSize(.small)
+        }
+        .cardSurface()
+    }
+
+    private var quickStartPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("使用流程")
+                .font(.headline)
+            Text("1) 先在“CLI 运行时接入”确认工具已安装；2) 填写仓库路径与分支；3) 在“执行”页配置命令并点击开始；4) 在“治理/协作”页做审批、恢复与评论。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .cardSurface()
+    }
+
+    private var sourceContextEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("仓库与分支")
+                .font(.headline)
+            HStack(spacing: 10) {
+                TextField("仓库路径", text: $draftRepositoryPath)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                TextField("分支", text: $draftBranchName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 180)
+            }
+            HStack {
+                Spacer()
+                Button("保存仓库上下文") {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        viewModel.updateTaskSource(
+                            taskID: task.id,
+                            repositoryPath: draftRepositoryPath,
+                            branchName: draftBranchName
+                        )
+                    }
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
         .cardSurface()
@@ -108,7 +195,7 @@ struct TaskDetailView: View {
             HStack {
                 Spacer()
                 Button("保存定义") {
-                    withAnimation(.snappy(duration: 0.22)) {
+                    withAnimation(.snappy(duration: 0.2)) {
                         viewModel.updateTaskMeta(
                             taskID: task.id,
                             title: draftTitle,
@@ -147,20 +234,6 @@ struct TaskDetailView: View {
                     viewModel.setValidation(taskID: task.id, hasConflict: !task.validation.hasConflict)
                 }
             }
-        }
-        .cardSurface()
-    }
-
-    private var keyboardHintsPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("键盘优先路径")
-                .font(.headline)
-            Text("⌘R 开始执行 · ⌘. 暂停 · ⌘U 继续 · ⇧⌘P 推进阶段")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("在决策中心可直接用按钮完成审批与重试，全流程支持无鼠标推进。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .cardSurface()
     }
@@ -212,5 +285,7 @@ struct TaskDetailView: View {
         draftConstraints = task.constraints.joined(separator: "\n")
         draftAcceptance = task.acceptanceCriteria.joined(separator: "\n")
         draftRisks = task.riskNotes.joined(separator: "\n")
+        draftRepositoryPath = task.repositoryPath
+        draftBranchName = task.branchName
     }
 }

@@ -116,6 +116,10 @@ struct AgentSession: Codable, Hashable, Identifiable {
 
 struct WorkTask: Codable, Hashable, Identifiable {
     let id: UUID
+    var projectID: UUID?
+    var repositoryPath: String
+    var branchName: String
+    var lane: BoardLane
     var title: String
     var goal: String
     var constraints: [String]
@@ -130,12 +134,17 @@ struct WorkTask: Codable, Hashable, Identifiable {
     var approval: ApprovalState
     var governancePolicy: GovernancePolicy
     var recoveryPoints: [RecoveryPoint]
+    var comments: [TaskComment]
     var summary: String
     var createdAt: Date
     var updatedAt: Date
 
     init(
         id: UUID = UUID(),
+        projectID: UUID? = nil,
+        repositoryPath: String = "",
+        branchName: String = "main",
+        lane: BoardLane = .backlog,
         title: String,
         goal: String,
         constraints: [String],
@@ -150,11 +159,16 @@ struct WorkTask: Codable, Hashable, Identifiable {
         approval: ApprovalState = .default,
         governancePolicy: GovernancePolicy = .defaults(for: .balanced),
         recoveryPoints: [RecoveryPoint] = [],
+        comments: [TaskComment] = [],
         summary: String = "",
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
+        self.projectID = projectID
+        self.repositoryPath = repositoryPath
+        self.branchName = branchName
+        self.lane = lane
         self.title = title
         self.goal = goal
         self.constraints = constraints
@@ -169,8 +183,89 @@ struct WorkTask: Codable, Hashable, Identifiable {
         self.approval = approval
         self.governancePolicy = governancePolicy
         self.recoveryPoints = recoveryPoints
+        self.comments = comments
         self.summary = summary
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case projectID
+        case repositoryPath
+        case branchName
+        case lane
+        case title
+        case goal
+        case constraints
+        case acceptanceCriteria
+        case riskNotes
+        case phase
+        case phaseHistory
+        case status
+        case sessions
+        case budget
+        case validation
+        case approval
+        case governancePolicy
+        case recoveryPoints
+        case comments
+        case summary
+        case createdAt
+        case updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        projectID = try container.decodeIfPresent(UUID.self, forKey: .projectID)
+        repositoryPath = try container.decodeIfPresent(String.self, forKey: .repositoryPath) ?? ""
+        branchName = try container.decodeIfPresent(String.self, forKey: .branchName) ?? "main"
+        lane = try container.decodeIfPresent(BoardLane.self, forKey: .lane) ?? .backlog
+        title = try container.decode(String.self, forKey: .title)
+        goal = try container.decode(String.self, forKey: .goal)
+        constraints = try container.decode([String].self, forKey: .constraints)
+        acceptanceCriteria = try container.decode([String].self, forKey: .acceptanceCriteria)
+        riskNotes = try container.decode([String].self, forKey: .riskNotes)
+        phase = try container.decodeIfPresent(TaskPhase.self, forKey: .phase) ?? .plan
+        phaseHistory = try container.decodeIfPresent([TaskPhase].self, forKey: .phaseHistory) ?? [.plan]
+        status = try container.decodeIfPresent(TaskStatus.self, forKey: .status) ?? .ready
+        sessions = try container.decodeIfPresent([AgentSession].self, forKey: .sessions) ?? []
+        budget = try container.decodeIfPresent(BudgetTracker.self, forKey: .budget) ?? .default
+        validation = try container.decodeIfPresent(ValidationSnapshot.self, forKey: .validation) ?? .default
+        approval = try container.decodeIfPresent(ApprovalState.self, forKey: .approval) ?? .default
+        governancePolicy = try container.decodeIfPresent(GovernancePolicy.self, forKey: .governancePolicy) ?? .defaults(for: .balanced)
+        recoveryPoints = try container.decodeIfPresent([RecoveryPoint].self, forKey: .recoveryPoints) ?? []
+        comments = try container.decodeIfPresent([TaskComment].self, forKey: .comments) ?? []
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(projectID, forKey: .projectID)
+        try container.encode(repositoryPath, forKey: .repositoryPath)
+        try container.encode(branchName, forKey: .branchName)
+        try container.encode(lane, forKey: .lane)
+        try container.encode(title, forKey: .title)
+        try container.encode(goal, forKey: .goal)
+        try container.encode(constraints, forKey: .constraints)
+        try container.encode(acceptanceCriteria, forKey: .acceptanceCriteria)
+        try container.encode(riskNotes, forKey: .riskNotes)
+        try container.encode(phase, forKey: .phase)
+        try container.encode(phaseHistory, forKey: .phaseHistory)
+        try container.encode(status, forKey: .status)
+        try container.encode(sessions, forKey: .sessions)
+        try container.encode(budget, forKey: .budget)
+        try container.encode(validation, forKey: .validation)
+        try container.encode(approval, forKey: .approval)
+        try container.encode(governancePolicy, forKey: .governancePolicy)
+        try container.encode(recoveryPoints, forKey: .recoveryPoints)
+        try container.encode(comments, forKey: .comments)
+        try container.encode(summary, forKey: .summary)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }

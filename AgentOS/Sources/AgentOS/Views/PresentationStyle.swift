@@ -61,6 +61,29 @@ extension AgentSessionState {
     }
 }
 
+extension BoardLane {
+    var tintColor: Color {
+        switch self {
+        case .backlog: return .gray
+        case .inProgress: return .blue
+        case .review: return .orange
+        case .done: return .green
+        }
+    }
+}
+
+extension CollaborationRole {
+    var tintColor: Color {
+        switch self {
+        case .owner: return .blue
+        case .developer: return .purple
+        case .reviewer: return .orange
+        case .qa: return .green
+        case .system: return .gray
+        }
+    }
+}
+
 struct CardSurface: ViewModifier {
     func body(content: Content) -> some View {
         content

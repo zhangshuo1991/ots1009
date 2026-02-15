@@ -7,10 +7,14 @@ struct AgentGridView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("多代理协同面板")
+            Text("代理执行面板")
                 .font(.headline)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 12)], spacing: 12) {
+            Text("先配置每个代理命令模板，再点击任务“开始”。运行后可在下方统一日志查看实时输出。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 10) {
                 ForEach(AgentKind.allCases, id: \.self) { agent in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
@@ -33,34 +37,26 @@ struct AgentGridView: View {
                             }
                         }
 
-                        TextEditor(
+                        TextField(
+                            "命令模板",
                             text: Binding(
                                 get: { viewModel.commandTemplates[agent] ?? agent.defaultCommand },
                                 set: { viewModel.updateCommandTemplate(agent: agent, command: $0) }
-                            )
+                            ),
+                            axis: .vertical
                         )
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
-                        .frame(height: 96)
-                        .clipShape(.rect(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.black.opacity(0.1), lineWidth: 1)
-                        )
+                        .lineLimit(2...4)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
 
                         if let session = task.sessions.last(where: { $0.agent == agent }) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("最新输出")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(session.latestMessage.isEmpty ? "--" : session.latestMessage)
-                                    .font(.caption)
-                                    .lineLimit(2)
-                                Text(
-                                    "估算: \(session.estimatedTokens) tokens · $\(session.estimatedCost.formatted(.number.precision(.fractionLength(3))))"
-                                )
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+                            Text(session.latestMessage.isEmpty ? "暂无输出" : session.latestMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            Text("估算: \(session.estimatedTokens) tokens · $\(session.estimatedCost.formatted(.number.precision(.fractionLength(3))))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .cardSurface()

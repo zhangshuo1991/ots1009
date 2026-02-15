@@ -6,12 +6,15 @@ import SwiftUI
 @Observable
 final class DashboardViewModel {
     var tasks: [WorkTask] = []
+    var projects: [WorkspaceProject] = []
+    var selectedProjectID: UUID?
     var selectedTaskID: UUID?
     var strategyProfiles: [StrategyProfile] = StrategyProfile.presets
     var selectedStrategyID: UUID?
     var commandTemplates: [AgentKind: String] = Dictionary(
         uniqueKeysWithValues: AgentKind.allCases.map { ($0, $0.defaultCommand) }
     )
+    var cliStatuses: [CLIToolStatus] = []
     var executionMode: ExecutionMode = .localShell
     var globalMessage: String = ""
 
@@ -19,6 +22,7 @@ final class DashboardViewModel {
     private let budgetGuard = BudgetGuard()
     private let persistence: SessionPersistence
     private let recoveryCoordinator: RecoveryCoordinator
+    private let cliIntegrationService = CLIIntegrationService()
     @ObservationIgnored private let reportExporter = ReportExporter()
     @ObservationIgnored private var localExecutionProvider: LocalShellExecutionProvider!
     @ObservationIgnored private var scenarioExecutionProvider: ScenarioExecutionProvider!
@@ -47,6 +51,16 @@ final class DashboardViewModel {
         return tasks.first(where: { $0.id == selectedTaskID })
     }
 
+    var selectedProject: WorkspaceProject? {
+        guard let selectedProjectID else { return nil }
+        return projects.first(where: { $0.id == selectedProjectID })
+    }
+
+    var visibleTasks: [WorkTask] {
+        guard let selectedProjectID else { return tasks }
+        return tasks.filter { $0.projectID == selectedProjectID }
+    }
+
     var selectedStrategy: StrategyProfile {
         if let selectedStrategyID,
            let strategy = strategyProfiles.first(where: { $0.id == selectedStrategyID })
@@ -73,8 +87,69 @@ final class DashboardViewModel {
         persistSnapshot()
     }
 
+    func refreshCLIStatuses() {
+        cliStatuses = cliIntegrationService.detectAll()
+        globalMessage = "已刷新 CLI 检测状态"
+        persistSnapshot()
+    }
+
+    func applyDetectedBinariesToTemplates() {
+        if cliStatuses.isEmpty {
+            refreshCLIStatuses()
+        }
+
+        for status in cliStatuses where status.isInstalled {
+            guard let binaryPath = status.resolvedBinary else { continue }
+            switch status.tool {
+            case .codex:
+                commandTemplates[.codex] = "\"\(binaryPath)\""
+            case .claudeCode:
+                commandTemplates[.claudeCode] = "\"\(binaryPath)\""
+            case .opencode:
+                commandTemplates[.openCode] = "\"\(binaryPath)\""
+            case .geminiCLI:
+                commandTemplates[.geminiCLI] = "\"\(binaryPath)\""
+            }
+        }
+
+        globalMessage = "已将检测到的 CLI 二进制写入命令模板"
+        persistSnapshot()
+    }
+
+    func createProject(name: String, repositoryPath: String, defaultBranch: String = "main") {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRepo = repositoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        let project = WorkspaceProject(
+            name: trimmedName,
+            repositoryPath: trimmedRepo,
+            defaultBranch: defaultBranch,
+            activeBranch: defaultBranch
+        )
+        projects.insert(project, at: 0)
+        selectedProjectID = project.id
+        globalMessage = "已创建项目：\(project.name)"
+        persistSnapshot()
+    }
+
+    func selectProject(_ projectID: UUID?) {
+        selectedProjectID = projectID
+        if let projectID {
+            selectedTaskID = tasks.first(where: { $0.projectID == projectID })?.id
+        } else {
+            selectedTaskID = tasks.first?.id
+        }
+        persistSnapshot()
+    }
+
     func createTask() {
+        let project = selectedProject
         let task = WorkTask(
+            projectID: project?.id,
+            repositoryPath: project?.repositoryPath ?? "",
+            branchName: project?.activeBranch ?? "main",
+            lane: .backlog,
             title: "新任务 \(tasks.count + 1)",
             goal: "将需求拆解为可验证阶段，并交付可运行成果。",
             constraints: [
@@ -89,10 +164,18 @@ final class DashboardViewModel {
             riskNotes: [
                 "并行代理输出冲突",
                 "配额或时长接近上限",
+            ],
+            comments: [
+                TaskComment(author: .system, content: "任务已创建，可开始分配代理并执行。")
             ]
         )
 
         tasks.insert(task, at: 0)
+        if let projectID = project?.id,
+           let projectIndex = projects.firstIndex(where: { $0.id == projectID })
+        {
+            projects[projectIndex].taskIDs.insert(task.id, at: 0)
+        }
         selectedTaskID = task.id
         globalMessage = "已创建任务：\(task.title)"
         persistSnapshot()
@@ -102,15 +185,25 @@ final class DashboardViewModel {
         guard let original = tasks.first(where: { $0.id == taskID }) else { return }
         var duplicated = original
         duplicated = WorkTask(
+            projectID: original.projectID,
+            repositoryPath: original.repositoryPath,
+            branchName: original.branchName,
+            lane: original.lane,
             title: "\(original.title)（副本）",
             goal: original.goal,
             constraints: original.constraints,
             acceptanceCriteria: original.acceptanceCriteria,
             riskNotes: original.riskNotes,
-            governancePolicy: original.governancePolicy
+            governancePolicy: original.governancePolicy,
+            comments: original.comments + [TaskComment(author: .system, content: "由副本任务生成。")]
         )
 
         tasks.insert(duplicated, at: 0)
+        if let projectID = duplicated.projectID,
+           let projectIndex = projects.firstIndex(where: { $0.id == projectID })
+        {
+            projects[projectIndex].taskIDs.insert(duplicated.id, at: 0)
+        }
         selectedTaskID = duplicated.id
         globalMessage = "已创建副本任务"
         persistSnapshot()
@@ -118,8 +211,11 @@ final class DashboardViewModel {
 
     func deleteTask(_ taskID: UUID) {
         tasks.removeAll { $0.id == taskID }
+        for index in projects.indices {
+            projects[index].taskIDs.removeAll { $0 == taskID }
+        }
         if selectedTaskID == taskID {
-            selectedTaskID = tasks.first?.id
+            selectedTaskID = visibleTasks.first?.id ?? tasks.first?.id
         }
         globalMessage = "任务已删除"
         persistSnapshot()
@@ -154,6 +250,7 @@ final class DashboardViewModel {
         }
 
         task.status = .inProgress
+        task.lane = .inProgress
         task.governancePolicy = GovernancePolicy.defaults(for: strategy.mode)
         task.approval.requiredApprovals = task.governancePolicy.requiredApprovals
         task.approval.fallbackAction = task.governancePolicy.fallbackAction
@@ -187,6 +284,7 @@ final class DashboardViewModel {
         }
 
         appendRecoveryPoint(to: &task, note: "开始执行，策略：\(strategy.name)")
+        task.comments.append(TaskComment(author: .system, content: "任务已启动，进入执行阶段。"))
         updateBudgetAfterTaskStart(&task, strategy: strategy)
         tasks[index] = task
 
@@ -286,6 +384,9 @@ final class DashboardViewModel {
         }
 
         autoAdvanceIfNeeded(&task)
+        if task.status == .completed {
+            task.lane = .done
+        }
         task.updatedAt = Date()
         tasks[index] = task
         persistSnapshot()
@@ -520,6 +621,42 @@ final class DashboardViewModel {
         persistSnapshot()
     }
 
+    func updateTaskSource(taskID: UUID, repositoryPath: String, branchName: String) {
+        guard let index = indexOfTask(taskID) else { return }
+        var task = tasks[index]
+        task.repositoryPath = repositoryPath
+        task.branchName = branchName
+        task.updatedAt = Date()
+        tasks[index] = task
+
+        if let projectID = task.projectID,
+           let projectIndex = projects.firstIndex(where: { $0.id == projectID })
+        {
+            projects[projectIndex].repositoryPath = repositoryPath
+            projects[projectIndex].activeBranch = branchName
+        }
+
+        persistSnapshot()
+    }
+
+    func setTaskLane(taskID: UUID, lane: BoardLane) {
+        guard let index = indexOfTask(taskID) else { return }
+        tasks[index].lane = lane
+        tasks[index].updatedAt = Date()
+        persistSnapshot()
+    }
+
+    func addComment(taskID: UUID, author: CollaborationRole, content: String) {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let index = indexOfTask(taskID) else { return }
+
+        tasks[index].comments.append(TaskComment(author: author, content: trimmed))
+        tasks[index].updatedAt = Date()
+        globalMessage = "已添加评论（\(author.title)）"
+        persistSnapshot()
+    }
+
     private func handleExecutionEvent(_ event: AgentExecutionEvent) {
         switch event {
         case let .started(sessionID):
@@ -551,6 +688,7 @@ final class DashboardViewModel {
                     task.approval.timeoutAt = Date().addingTimeInterval(TimeInterval(task.governancePolicy.timeoutSeconds))
                 }
                 task.status = .needsDecision
+                task.lane = .review
                 task.updatedAt = Date()
             }
         case let .finished(sessionID, exitCode):
@@ -566,9 +704,13 @@ final class DashboardViewModel {
                     if task.sessions.allSatisfy({ $0.state != .running && $0.state != .waitingApproval }) {
                         task.status = .inProgress
                         autoAdvanceIfNeeded(&task)
+                        if task.status == .completed {
+                            task.lane = .done
+                        }
                     }
                 } else {
                     task.status = .failed
+                    task.lane = .review
                 }
                 task.updatedAt = Date()
                 appendRecoveryPoint(to: &task, note: "会话结束，退出码 \(exitCode)")
@@ -584,6 +726,7 @@ final class DashboardViewModel {
             }
             mutateTaskForSession(sessionID: sessionID) { task in
                 task.status = .failed
+                task.lane = .review
                 task.updatedAt = Date()
                 appendRecoveryPoint(to: &task, note: "会话异常：\(message)")
             }
@@ -810,38 +953,59 @@ final class DashboardViewModel {
     private func restoreOrBootstrap() {
         if let restored = recoveryCoordinator.restore() {
             tasks = restored.tasks
+            projects = restored.projects ?? []
+            selectedProjectID = restored.selectedProjectID ?? projects.first?.id
             strategyProfiles = restored.strategyProfiles.isEmpty ? StrategyProfile.presets : restored.strategyProfiles
             selectedStrategyID = restored.selectedStrategyID ?? strategyProfiles.first?.id
             commandTemplates = AgentKind.allCases.reduce(into: [:]) { partialResult, kind in
                 partialResult[kind] = restored.commandTemplates[kind.rawValue] ?? kind.defaultCommand
             }
             executionMode = restored.executionMode ?? .localShell
-            selectedTaskID = tasks.first?.id
+            cliStatuses = restored.cliStatuses ?? cliIntegrationService.detectAll()
+            selectedTaskID = visibleTasks.first?.id ?? tasks.first?.id
             globalMessage = "已从恢复快照加载 \(tasks.count) 个任务"
             return
         }
 
         strategyProfiles = StrategyProfile.presets
         selectedStrategyID = strategyProfiles.first?.id
-        tasks = [
-            WorkTask(
-                title: "Agent OS 初始化任务",
-                goal: "建立多代理协同中枢与可恢复任务闭环。",
-                constraints: [
-                    "统一状态机：运行/授权/阻塞/失败/完成",
-                    "关键阶段必须可人工决策",
-                ],
-                acceptanceCriteria: [
-                    "至少 2 个代理并行运行",
-                    "阶段推进可追踪",
-                    "可恢复点可回放",
-                ],
-                riskNotes: [
-                    "并发日志量可能较大",
-                    "预算阈值需及时告警",
-                ]
-            )
-        ]
+
+        let defaultProject = WorkspaceProject(
+            name: "默认工作区",
+            repositoryPath: FileManager.default.currentDirectoryPath,
+            defaultBranch: "main",
+            activeBranch: "main"
+        )
+        projects = [defaultProject]
+        selectedProjectID = defaultProject.id
+
+        let initialTask = WorkTask(
+            projectID: defaultProject.id,
+            repositoryPath: defaultProject.repositoryPath,
+            branchName: defaultProject.activeBranch,
+            lane: .backlog,
+            title: "Agent OS 初始化任务",
+            goal: "建立多代理协同中枢与可恢复任务闭环。",
+            constraints: [
+                "统一状态机：运行/授权/阻塞/失败/完成",
+                "关键阶段必须可人工决策",
+            ],
+            acceptanceCriteria: [
+                "至少 2 个代理并行运行",
+                "阶段推进可追踪",
+                "可恢复点可回放",
+            ],
+            riskNotes: [
+                "并发日志量可能较大",
+                "预算阈值需及时告警",
+            ],
+            comments: [
+                TaskComment(author: .system, content: "欢迎使用 Agent OS，请先配置 CLI 与仓库信息。")
+            ]
+        )
+        tasks = [initialTask]
+        projects[0].taskIDs = [initialTask.id]
+        cliStatuses = cliIntegrationService.detectAll()
         selectedTaskID = tasks.first?.id
         globalMessage = "已创建默认工作区"
         persistSnapshot()
@@ -863,10 +1027,13 @@ final class DashboardViewModel {
     private func persistSnapshot() {
         let snapshot = WorkspaceSnapshot(
             tasks: tasks,
+            projects: projects,
+            selectedProjectID: selectedProjectID,
             strategyProfiles: strategyProfiles,
             selectedStrategyID: selectedStrategyID,
             commandTemplates: commandTemplates.reduce(into: [:]) { $0[$1.key.rawValue] = $1.value },
             executionMode: executionMode,
+            cliStatuses: cliStatuses,
             updatedAt: Date()
         )
 

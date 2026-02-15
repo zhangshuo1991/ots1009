@@ -3,29 +3,18 @@ import SwiftUI
 
 struct TaskSidebarView: View {
     @Bindable var viewModel: DashboardViewModel
+    @State private var showingProjectSheet = false
+    @State private var projectName = ""
+    @State private var projectRepo = ""
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("任务列表")
-                    .font(.title3.bold())
-                Spacer()
-                Button {
-                    withAnimation(.snappy(duration: 0.22)) {
-                        viewModel.createTask()
-                    }
-                } label: {
-                    Label("新建任务", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .keyboardShortcut("n", modifiers: [.command])
+        List(selection: $viewModel.selectedTaskID) {
+            Section {
+                projectPicker
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
 
-            List(selection: $viewModel.selectedTaskID) {
-                ForEach(viewModel.tasks) { task in
+            Section("任务") {
+                ForEach(viewModel.visibleTasks) { task in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text(task.title)
@@ -33,29 +22,26 @@ struct TaskSidebarView: View {
                                 .lineLimit(1)
                             Spacer()
                             Circle()
-                                .fill(task.status.tintColor)
+                                .fill(task.lane.tintColor)
                                 .frame(width: 8, height: 8)
                         }
 
-                        Text(task.phase.title)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
                         HStack {
+                            Text(task.lane.title)
+                                .font(.caption2)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(task.lane.tintColor.opacity(0.16), in: Capsule())
                             Text(task.status.displayTitle)
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(task.status.tintColor.opacity(0.18), in: Capsule())
-
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                             Spacer()
-
                             Text("\(task.sessions.count) 会话")
-                                .font(.caption)
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 2)
                     .tag(task.id)
                     .contextMenu {
                         Button("复制任务", systemImage: "doc.on.doc") {
@@ -65,38 +51,108 @@ struct TaskSidebarView: View {
                             viewModel.deleteTask(task.id)
                         }
                     }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("任务 \(task.title)，状态 \(task.status.displayTitle)")
                 }
             }
-            .listStyle(.sidebar)
+        }
+        .safeAreaInset(edge: .bottom) {
+            bottomActions
+        }
+        .sheet(isPresented: $showingProjectSheet) {
+            NavigationStack {
+                Form {
+                    TextField("项目名称", text: $projectName)
+                    TextField("仓库路径", text: $projectRepo)
+                }
+                .navigationTitle("新建项目")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") {
+                            showingProjectSheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("创建") {
+                            viewModel.createProject(name: projectName, repositoryPath: projectRepo)
+                            projectName = ""
+                            projectRepo = ""
+                            showingProjectSheet = false
+                        }
+                    }
+                }
+            }
+            .frame(minWidth: 420, minHeight: 220)
+        }
+    }
 
+    private var projectPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("项目")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Picker("项目", selection: Binding(
+                get: { viewModel.selectedProjectID },
+                set: { viewModel.selectProject($0) }
+            )) {
+                ForEach(viewModel.projects) { project in
+                    Text(project.name).tag(Optional(project.id))
+                }
+            }
+            .pickerStyle(.menu)
+
+            HStack(spacing: 8) {
+                Button {
+                    showingProjectSheet = true
+                } label: {
+                    Label("新建项目", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        viewModel.createTask()
+                    }
+                } label: {
+                    Label("新建任务", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .keyboardShortcut("n", modifiers: [.command])
+            }
+        }
+    }
+
+    private var bottomActions: some View {
+        VStack(spacing: 8) {
             if let selectedTaskID = viewModel.selectedTaskID {
                 HStack(spacing: 8) {
                     Button("开始") {
-                        withAnimation(.snappy(duration: 0.22)) {
+                        withAnimation(.snappy(duration: 0.2)) {
                             viewModel.startTask(selectedTaskID)
                         }
                     }
-                        .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent)
+
                     Button("暂停") {
-                        withAnimation(.snappy(duration: 0.22)) {
+                        withAnimation(.snappy(duration: 0.2)) {
                             viewModel.pauseTask(selectedTaskID)
                         }
                     }
-                        .buttonStyle(.bordered)
+                    .buttonStyle(.bordered)
+
                     Button("继续") {
-                        withAnimation(.snappy(duration: 0.22)) {
+                        withAnimation(.snappy(duration: 0.2)) {
                             viewModel.resumeTask(selectedTaskID)
                         }
                     }
-                        .buttonStyle(.bordered)
+                    .buttonStyle(.bordered)
                 }
                 .controlSize(.small)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
             }
         }
-        .background(Color(red: 0.96, green: 0.97, blue: 0.98))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
     }
 }
