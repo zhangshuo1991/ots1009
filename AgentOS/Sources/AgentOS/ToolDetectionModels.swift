@@ -64,6 +64,17 @@ enum ProgrammingTool: String, CaseIterable, Identifiable, Codable {
     case kimiCLI
     case opencode
     case geminiCLI
+    case cursor
+    case windsurf
+    case trae
+    case kiloCode
+    case openclaw
+    case cline
+    case rooCode
+    case grokCLI
+    case droid
+    case zed
+    case monkeyCode
 
     var id: String { rawValue }
 
@@ -79,6 +90,28 @@ enum ProgrammingTool: String, CaseIterable, Identifiable, Codable {
             return "OpenCode"
         case .geminiCLI:
             return "Gemini CLI"
+        case .cursor:
+            return "Cursor"
+        case .windsurf:
+            return "Windsurf"
+        case .trae:
+            return "Trae"
+        case .kiloCode:
+            return "KiloCode"
+        case .openclaw:
+            return "OpenClaw"
+        case .cline:
+            return "Cline"
+        case .rooCode:
+            return "RooCode"
+        case .grokCLI:
+            return "Grok CLI"
+        case .droid:
+            return "Droid"
+        case .zed:
+            return "Zed"
+        case .monkeyCode:
+            return "MonkeyCode"
         }
     }
 
@@ -94,6 +127,140 @@ enum ProgrammingTool: String, CaseIterable, Identifiable, Codable {
             return ["opencode"]
         case .geminiCLI:
             return ["gemini", "gemini-cli"]
+        case .cursor:
+            return ["cursor"]
+        case .windsurf:
+            return ["windsurf"]
+        case .trae:
+            return ["trae"]
+        case .kiloCode:
+            return ["kilocode", "kilo-code", "kilocode"]
+        case .openclaw:
+            return ["openclaw"]
+        case .cline:
+            return ["cline"]
+        case .rooCode:
+            return ["roocode", "roo-code"]
+        case .grokCLI:
+            return ["grok", "grok-cli"]
+        case .droid:
+            return ["droid"]
+        case .zed:
+            return ["zed"]
+        case .monkeyCode:
+            return ["monkeycode", "monkey-code"]
+        }
+    }
+
+    var configPaths: [String] {
+        let home = NSHomeDirectory()
+        switch self {
+        case .codex:
+            return ["\(home)/.config/codex"]
+        case .claudeCode:
+            return ["\(home)/.config/claude"]
+        case .kimiCLI:
+            return ["\(home)/.config/kimi"]
+        case .opencode:
+            return ["\(home)/.config/opencode"]
+        case .geminiCLI:
+            return ["\(home)/.config/gemini"]
+        case .cursor:
+            return ["\(home)/Library/Application Support/Cursor"]
+        case .windsurf:
+            return ["\(home)/Library/Application Support/Windsurf"]
+        case .trae:
+            return ["\(home)/.config/trae"]
+        case .kiloCode:
+            return ["\(home)/.config/kilocode"]
+        case .openclaw:
+            return ["\(home)/.config/openclaw"]
+        case .cline:
+            return ["\(home)/.config/cline"]
+        case .rooCode:
+            return ["\(home)/.config/roocode"]
+        case .grokCLI:
+            return ["\(home)/.config/grok"]
+        case .droid:
+            return ["\(home)/.config/droid"]
+        case .zed:
+            return ["\(home)/.config/zed"]
+        case .monkeyCode:
+            return ["\(home)/.config/monkeycode"]
+        }
+    }
+
+    var npmPackageName: String? {
+        switch self {
+        case .codex:
+            return "@anthropic-ai/codex"
+        case .claudeCode:
+            return "@anthropic-ai/claude-code"
+        case .kimiCLI:
+            return "kimi-cli"
+        case .opencode:
+            return "opencode"
+        case .geminiCLI:
+            return "@anthropic-ai/gemini-cli"
+        case .cursor:
+            return nil
+        case .windsurf:
+            return nil
+        case .trae:
+            return nil
+        case .kiloCode:
+            return nil
+        case .openclaw:
+            return nil
+        case .cline:
+            return nil
+        case .rooCode:
+            return nil
+        case .grokCLI:
+            return nil
+        case .droid:
+            return nil
+        case .zed:
+            return nil
+        case .monkeyCode:
+            return nil
+        }
+    }
+
+    var homebrewFormula: String? {
+        switch self {
+        case .codex:
+            return nil
+        case .claudeCode:
+            return nil
+        case .kimiCLI:
+            return nil
+        case .opencode:
+            return nil
+        case .geminiCLI:
+            return nil
+        case .cursor:
+            return nil
+        case .windsurf:
+            return nil
+        case .trae:
+            return nil
+        case .kiloCode:
+            return nil
+        case .openclaw:
+            return nil
+        case .cline:
+            return "cline"
+        case .rooCode:
+            return nil
+        case .grokCLI:
+            return nil
+        case .droid:
+            return nil
+        case .zed:
+            return "zed"
+        case .monkeyCode:
+            return nil
         }
     }
 
@@ -109,6 +276,28 @@ enum ProgrammingTool: String, CaseIterable, Identifiable, Codable {
             return "安装后确保 opencode 可执行。"
         case .geminiCLI:
             return "安装后确保 gemini 或 gemini-cli 可执行。"
+        case .cursor:
+            return "安装后确保 cursor 可执行。"
+        case .windsurf:
+            return "安装后确保 windsurf 可执行。"
+        case .trae:
+            return "安装后确保 trae 可执行。"
+        case .kiloCode:
+            return "安装后确保 kilocode 或 kilo-code 可执行。"
+        case .openclaw:
+            return "安装后确保 openclaw 可执行。"
+        case .cline:
+            return "安装后确保 cline 可执行。"
+        case .rooCode:
+            return "安装后确保 roocode 或 roo-code 可执行。"
+        case .grokCLI:
+            return "安装后确保 grok 或 grok-cli 可执行。"
+        case .droid:
+            return "安装后确保 droid 可执行。"
+        case .zed:
+            return "安装后确保 zed 可执行。"
+        case .monkeyCode:
+            return "安装后确保 monkeycode 或 monkey-code 可执行。"
         }
     }
 
