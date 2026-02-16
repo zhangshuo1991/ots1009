@@ -315,3 +315,52 @@ struct ToolDetectionStatus: Identifiable, Hashable, Codable {
     let source: DetectionSource
     let note: String
 }
+
+struct ToolInstallation: Identifiable, Codable {
+    let id: ProgrammingTool
+    let tool: ProgrammingTool
+    var binaryPath: String?
+    var isInstalled: Bool
+    var installMethod: InstallMethod
+    var installLocation: String?
+    var configPaths: [String]
+    var version: String?
+
+    init(
+        tool: ProgrammingTool,
+        binaryPath: String? = nil,
+        isInstalled: Bool = false,
+        installMethod: InstallMethod = .unknown,
+        installLocation: String? = nil,
+        configPaths: [String]? = nil,
+        version: String? = nil
+    ) {
+        self.id = tool
+        self.tool = tool
+        self.binaryPath = binaryPath
+        self.isInstalled = isInstalled
+        self.installMethod = installMethod
+        self.installLocation = installLocation
+        self.configPaths = configPaths ?? tool.configPaths
+        self.version = version
+    }
+}
+
+struct ToolConfig: Codable {
+    var apiKey: String
+    var httpProxy: String
+    var httpsProxy: String
+    var model: String
+
+    init(
+        apiKey: String = "",
+        httpProxy: String = "",
+        httpsProxy: String = "",
+        model: String = ""
+    ) {
+        self.apiKey = apiKey
+        self.httpProxy = httpProxy
+        self.httpsProxy = httpsProxy
+        self.model = model
+    }
+}
