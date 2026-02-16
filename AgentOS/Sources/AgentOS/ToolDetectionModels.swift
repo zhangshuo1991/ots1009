@@ -34,8 +34,8 @@ enum InstallMethod: String, CaseIterable, Identifiable, Codable {
         case .npm: return "npm"
         case .homebrew: return "Homebrew"
         case .pip: return "pip"
-        case .direct: return "Direct Download"
-        case .unknown: return "Unknown"
+        case .direct: return "直接下载"
+        case .unknown: return "未知"
         }
     }
 
