@@ -30,6 +30,27 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_BINARY" "$MACOS_DIR/$APP_NAME"
 chmod +x "$MACOS_DIR/$APP_NAME"
 
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
+if [[ "${AGENTOS_INCLUDE_GHOSTTY_XCFRAMEWORK:-0}" == "1" ]]; then
+  GHOSTTYKIT_FRAMEWORK="$PACKAGE_DIR/Frameworks/GhosttyKit.xcframework"
+  if [[ -d "$GHOSTTYKIT_FRAMEWORK" ]]; then
+    echo "Copying GhosttyKit.xcframework (explicitly enabled)..."
+    mkdir -p "$FRAMEWORKS_DIR"
+    cp -R "$GHOSTTYKIT_FRAMEWORK" "$FRAMEWORKS_DIR/"
+  else
+    echo "Warning: AGENTOS_INCLUDE_GHOSTTY_XCFRAMEWORK=1 but framework not found."
+  fi
+else
+  echo "Skipping GhosttyKit.xcframework copy (libghostty is statically linked)."
+fi
+
+echo "Copying SwiftPM resource bundles..."
+shopt -s nullglob
+for bundle in "$PACKAGE_DIR/.build/release/"*.bundle; do
+  cp -R "$bundle" "$RESOURCES_DIR/"
+done
+shopt -u nullglob
+
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

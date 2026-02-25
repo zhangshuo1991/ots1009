@@ -9,8 +9,21 @@ let package = Package(
         .macOS(.v15),
     ],
     targets: [
+        // -- GhosttyKit ------------------------------------------------
+        .binaryTarget(name: "GhosttyKit", path: "Frameworks/GhosttyKit.xcframework"),
+
         .executableTarget(
-            name: "AgentOS"
+            name: "AgentOS",
+            dependencies: ["GhosttyKit"],
+            exclude: [
+                "Resources/ToolLogos/README.md",
+            ],
+            linkerSettings: [
+                .linkedFramework("Metal"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("Carbon"),
+                .linkedLibrary("c++"),
+            ]
         ),
         .testTarget(
             name: "AgentOSTests",

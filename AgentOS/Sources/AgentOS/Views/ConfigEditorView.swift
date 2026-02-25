@@ -2,85 +2,19 @@ import SwiftUI
 
 struct ConfigEditorView: View {
     let tool: ProgrammingTool
-    @Binding var isPresented: Bool
-    @State private var config = ToolConfig()
-    @State private var selectedConfigPath: String = ""
+    @Environment(\.dismiss) private var dismiss
+    @State private var config = ToolEditableConfig.empty
     @State private var isSaving = false
     @State private var statusMessage = ""
 
     private let configService = ConfigEditorService()
+    private var detailProfile: ToolDetailProfile { tool.detailProfile }
+    private var editableFields: [ToolEditableFieldDescriptor] { tool.supportedEditableFields }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Header
-            HStack {
-                Text("\(tool.title) - 设置")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    isPresented = false
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-
-            Divider()
-
-            // API Key
-            VStack(alignment: .leading, spacing: 4) {
-                Text("API Key")
-                    .font(.subheadline.weight(.medium))
-                SecureField("输入 API Key", text: $config.apiKey)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            // HTTP Proxy
-            VStack(alignment: .leading, spacing: 4) {
-                Text("HTTP 代理")
-                    .font(.subheadline.weight(.medium))
-                TextField("http://127.0.0.1:7890", text: $config.httpProxy)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            // HTTPS Proxy
-            VStack(alignment: .leading, spacing: 4) {
-                Text("HTTPS 代理")
-                    .font(.subheadline.weight(.medium))
-                TextField("http://127.0.0.1:7890", text: $config.httpsProxy)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            // Model
-            VStack(alignment: .leading, spacing: 4) {
-                Text("默认模型")
-                    .font(.subheadline.weight(.medium))
-                TextField("例如: claude-sonnet-4-5", text: $config.model)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            Divider()
-
-            // Config files
-            VStack(alignment: .leading, spacing: 8) {
-                Text("配置文件")
-                    .font(.subheadline.weight(.medium))
-
-                ForEach(tool.configPaths, id: \.self) { path in
-                    HStack {
-                        Text(path)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("编辑") {
-                            _ = configService.openConfigFile(path)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
-            }
+            header
+            editorContent
 
             if !statusMessage.isEmpty {
                 Text(statusMessage)
@@ -88,53 +22,140 @@ struct ConfigEditorView: View {
                     .foregroundStyle(statusMessage.contains("成功") ? .green : .red)
             }
 
-            // Actions
-            HStack {
-                Spacer()
-                Button("取消") {
-                    isPresented = false
-                }
-                .keyboardShortcut(.escape)
-
-                Button("保存") {
-                    Task {
-                        await saveConfig()
-                    }
-                }
-                .keyboardShortcut(.return)
-                .buttonStyle(.borderedProminent)
-                .disabled(isSaving)
-            }
+            footerActions
         }
         .padding(20)
-        .frame(width: 450)
+        .frame(width: 520)
         .onAppear {
             loadConfig()
         }
     }
 
-    private func loadConfig() {
-        if let path = configService.findExistingConfigPath(for: tool) {
-            selectedConfigPath = path
-            Task {
-                if let loaded = await configService.loadConfig(from: path) {
-                    config = loaded
-                }
+    private var header: some View {
+        HStack {
+            Text("\(tool.title) - 配置")
+                .font(.headline)
+            Spacer()
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
-        } else if let firstPath = tool.configPaths.first {
-            selectedConfigPath = firstPath
+            .buttonStyle(.plain)
         }
     }
 
-    private func saveConfig() async {
+    private var editorContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(detailProfile.roleSubtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if editableFields.isEmpty {
+                Label("该工具不支持在本应用直接编辑参数。", systemImage: "info.circle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(editableFields) { field in
+                    VStack(alignment: .leading, spacing: 6) {
+                        fieldTitle(field.label)
+                        if field.isSecure {
+                            SecureField(field.placeholder, text: binding(for: field.id))
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            TextField(field.placeholder, text: binding(for: field.id))
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        if !field.helper.isEmpty {
+                            Text(field.helper)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                let editablePaths = configService.editableConfigPaths(for: tool)
+                if !editablePaths.isEmpty {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("将写入以下配置文件")
+                            .font(.subheadline.weight(.medium))
+
+                        ForEach(editablePaths, id: \.self) { path in
+                            HStack {
+                                Text(path)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("打开") {
+                                    _ = configService.openConfigFile(path)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var footerActions: some View {
+        HStack {
+            Spacer()
+            Button("取消") {
+                dismiss()
+            }
+            .keyboardShortcut(.escape)
+
+            Button("保存") {
+                saveConfig()
+            }
+            .keyboardShortcut(.return)
+            .buttonStyle(.borderedProminent)
+            .disabled(isSaving || editableFields.isEmpty)
+        }
+    }
+
+    private func fieldTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.medium))
+    }
+
+    private func binding(for fieldID: String) -> Binding<String> {
+        Binding(
+            get: { config.value(for: fieldID) },
+            set: { newValue in
+                config.setValue(newValue, for: fieldID)
+            }
+        )
+    }
+
+    private func loadConfig() {
+        guard !editableFields.isEmpty else {
+            config = .empty
+            return
+        }
+        if let loaded = configService.loadEditableConfigSync(for: tool) {
+            config = loaded
+        }
+    }
+
+    private func saveConfig() {
+        guard !editableFields.isEmpty else {
+            statusMessage = "该工具不支持在本应用内保存配置。"
+            return
+        }
         isSaving = true
         statusMessage = ""
 
         do {
-            try await configService.saveConfig(config, to: selectedConfigPath)
+            try configService.saveEditableConfig(config, for: tool)
             statusMessage = "保存成功"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                isPresented = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                dismiss()
             }
         } catch {
             statusMessage = "保存失败: \(error.localizedDescription)"
