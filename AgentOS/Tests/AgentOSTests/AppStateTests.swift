@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Testing
 @testable import AgentOS
@@ -86,7 +87,7 @@ struct AppStateTests {
         state.installations = [
             ToolInstallation(
                 tool: .codex,
-                binaryPath: "/usr/bin/env",
+                binaryPath: nil,
                 isInstalled: true,
                 installMethod: .npm,
                 installLocation: "/tmp/codex",
@@ -265,7 +266,7 @@ struct AppStateTests {
         state.installations = [
             ToolInstallation(
                 tool: .codex,
-                binaryPath: "/usr/bin/env",
+                binaryPath: nil,
                 isInstalled: true,
                 installMethod: .npm,
                 installLocation: "/tmp/codex",
@@ -313,6 +314,149 @@ struct AppStateTests {
         runner.emitOutput("Waiting for input: enter your choice\\n")
         await Task.yield()
         #expect(state.terminalRuntimeState(for: sessionID) == .waitingUserInput)
+        #expect(state.runtimeStateSource(for: sessionID) == .heuristicOutput)
+    }
+
+    @Test
+    func codexSessionDefaultsToWorkingInClassicMode() async {
+        let runner = MockTerminalRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .codex,
+                binaryPath: "/usr/bin/env",
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/codex",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        guard let sessionID = state.createTerminalSession(for: .codex, workingDirectory: workspace) else {
+            Issue.record("会话创建失败")
+            return
+        }
+
+        await Task.yield()
+        #expect(state.terminalRuntimeState(for: sessionID) == .working)
+        #expect(state.runtimeStateSource(for: sessionID) == .lifecycle)
+    }
+
+    @Test
+    func codexSessionUsesNodeWrapperWhenDirectLaunch() {
+        let runner = MockTerminalRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .codex,
+                binaryPath: nil,
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/codex",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        let sessionID = state.createTerminalSession(for: .codex, workingDirectory: workspace)
+        #expect(sessionID != nil)
+        #expect(runner.startedExecutable == "/usr/bin/env")
+        #expect(runner.startedArguments.first == "node")
+        #expect(runner.startedArguments.contains("--ipc-path"))
+        #expect(runner.startedArguments.contains("--"))
+    }
+
+    @Test
+    func lifecycleStateOverridesHeuristicStateWhenSessionEnds() async {
+        let runner = MockTerminalRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .codex,
+                binaryPath: "/usr/bin/env",
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/codex",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        guard let sessionID = state.createTerminalSession(for: .codex, workingDirectory: workspace) else {
+            Issue.record("会话创建失败")
+            return
+        }
+
+        runner.emitOutput("Waiting for input: enter your choice\\n")
+        await Task.yield()
+        #expect(state.terminalRuntimeState(for: sessionID) == .waitingUserInput)
+        #expect(state.runtimeStateSource(for: sessionID) == .heuristicOutput)
+
+        runner.emitExit(0)
+        await Task.yield()
+        #expect(state.terminalRuntimeState(for: sessionID) == .completedSuccess)
+        #expect(state.runtimeStateSource(for: sessionID) == .lifecycle)
+    }
+
+    @Test
+    func runtimeIPCApprovalEventSupportsNativeApprovalLoop() async throws {
+        let runner = MockTerminalRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .codex,
+                binaryPath: "/usr/bin/env",
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/codex",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        guard let sessionID = state.createTerminalSession(for: .codex, workingDirectory: workspace) else {
+            Issue.record("会话创建失败")
+            return
+        }
+        guard let socketPath = runner.startedEnvironment["AGENTOS_IPC_PATH"], !socketPath.isEmpty else {
+            Issue.record("缺少 AGENTOS_IPC_PATH")
+            return
+        }
+
+        try sendRuntimeIPCEvent(
+            socketPath: socketPath,
+            line: #"{"status":"approving","message":"Allow this command?","approvalPrompt":"Allow this command?"}"#
+        )
+        try? await Task.sleep(nanoseconds: 160_000_000)
+
+        #expect(state.terminalRuntimeState(for: sessionID) == .waitingApproval)
+        #expect(state.runtimeStateSource(for: sessionID) == .wrapperIPC)
+        #expect(state.pendingApprovalRequest(for: sessionID)?.prompt == "Allow this command?")
+
+        state.approvePendingTerminalAction(sessionID)
+        #expect(runner.sentInputs.last == "y\n")
+        #expect(state.pendingApprovalRequest(for: sessionID) == nil)
     }
 
     @Test
@@ -556,6 +700,7 @@ struct AppStateTests {
         #expect(runner.startedEnvironment["COLORTERM"] == "truecolor")
         #expect(runner.startedEnvironment["TERM_PROGRAM"] == "ghostty")
         #expect((runner.startedEnvironment["PATH"] ?? "").contains("/opt/homebrew/bin"))
+        #expect(!(runner.startedEnvironment["AGENTOS_IPC_PATH"] ?? "").isEmpty)
     }
 
     @Test
@@ -1270,6 +1415,69 @@ struct AppStateTests {
         #expect(result.contains(.codex))
         #expect(!result.contains(.claudeCode))
         #expect(result.count == 1)
+    }
+}
+
+private func sendRuntimeIPCEvent(socketPath: String, line: String) throws {
+    let clientFD = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard clientFD >= 0 else {
+        throw IPCSendError.socketCreate(errno)
+    }
+    defer { Darwin.close(clientFD) }
+
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(socketPath.utf8CString)
+    let sunPathCapacity = MemoryLayout.size(ofValue: address.sun_path)
+    guard pathBytes.count <= sunPathCapacity else {
+        throw IPCSendError.pathTooLong(socketPath)
+    }
+
+    withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
+        rawBuffer.initializeMemory(as: UInt8.self, repeating: 0)
+        for (index, byte) in pathBytes.enumerated() {
+            rawBuffer[index] = UInt8(bitPattern: byte)
+        }
+    }
+
+    let addressLength = socklen_t(MemoryLayout.size(ofValue: address.sun_family) + pathBytes.count)
+    let connectResult = withUnsafePointer(to: &address) { pointer -> Int32 in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            Darwin.connect(clientFD, sockaddrPointer, addressLength)
+        }
+    }
+    guard connectResult == 0 else {
+        throw IPCSendError.connect(errno)
+    }
+
+    let payload = line + "\n"
+    let bytes = Array(payload.utf8)
+    let writeResult = bytes.withUnsafeBytes { rawBuffer -> Int in
+        guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+        return Darwin.write(clientFD, baseAddress, bytes.count)
+    }
+    if writeResult < 0 {
+        throw IPCSendError.write(errno)
+    }
+}
+
+private enum IPCSendError: LocalizedError {
+    case socketCreate(Int32)
+    case connect(Int32)
+    case write(Int32)
+    case pathTooLong(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .socketCreate(let code):
+            return "IPC client socket 创建失败(errno=\(code))"
+        case .connect(let code):
+            return "IPC client connect 失败(errno=\(code))"
+        case .write(let code):
+            return "IPC client write 失败(errno=\(code))"
+        case .pathTooLong(let path):
+            return "IPC path 过长: \(path)"
+        }
     }
 }
 

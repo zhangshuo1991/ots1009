@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Observation
 
@@ -49,6 +50,12 @@ struct ClosedTerminalSessionRecord: Identifiable, Equatable {
     let closedAt: Date
 }
 
+private struct TerminalRuntimeLaunchCommand {
+    let executable: String
+    let arguments: [String]
+    let usesNodeWrapper: Bool
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -63,6 +70,10 @@ final class AppState {
     private var terminalRunners: [UUID: any CLITerminalRunning] = [:]
     private var terminalLastResize: [UUID: (cols: Int, rows: Int)] = [:]
     private var terminalRuntimeStates: [UUID: TerminalSessionRuntimeState] = [:]
+    private var terminalRuntimeStateSources: [UUID: TerminalRuntimeSignalSource] = [:]
+    private var terminalIPCServers: [UUID: any AgentRuntimeIPCServing] = [:]
+    private var terminalIPCSocketPaths: [UUID: String] = [:]
+    private var terminalPendingApprovals: [UUID: TerminalApprovalRequest] = [:]
     private var codexAppServerMonitors: [UUID: any CodexAppServerMonitoring] = [:]
     private let maxTerminalOutputCharacters = 4_096
     private let maxTerminalOutputBytes = 1_200_000
@@ -678,7 +689,7 @@ final class AppState {
             return runtimeState
         }
         if session.isRunning {
-            if session.tool == .codex {
+            if session.tool == .codex, isCodexProtocolModeEnabled {
                 return .syncing
             }
             return .working
@@ -695,6 +706,22 @@ final class AppState {
     func terminalRuntimeState(for sessionID: UUID) -> TerminalSessionRuntimeState? {
         guard let session = terminalSession(for: sessionID) else { return nil }
         return runtimeState(for: session)
+    }
+
+    func runtimeStateSource(for sessionID: UUID) -> TerminalRuntimeSignalSource? {
+        terminalRuntimeStateSources[sessionID]
+    }
+
+    func pendingApprovalRequest(for sessionID: UUID) -> TerminalApprovalRequest? {
+        terminalPendingApprovals[sessionID]
+    }
+
+    func approvePendingTerminalAction(_ sessionID: UUID) {
+        resolvePendingTerminalApproval(sessionID, approved: true)
+    }
+
+    func rejectPendingTerminalAction(_ sessionID: UUID) {
+        resolvePendingTerminalApproval(sessionID, approved: false)
     }
 
     func selectTerminalSession(_ sessionID: UUID?) {
@@ -1023,11 +1050,14 @@ final class AppState {
         let sessionToRemove = terminalSession(for: sessionID)
 
         stopCodexAppServerMonitor(for: sessionID)
+        stopRuntimeIPCServer(for: sessionID)
         if let runner = terminalRunners.removeValue(forKey: sessionID) {
             runner.terminate()
         }
         terminalLastResize.removeValue(forKey: sessionID)
         terminalRuntimeStates.removeValue(forKey: sessionID)
+        terminalRuntimeStateSources.removeValue(forKey: sessionID)
+        terminalPendingApprovals.removeValue(forKey: sessionID)
 
         terminalSessions.removeAll(where: { $0.id == sessionID })
         terminalSessionOrder.removeAll(where: { $0 == sessionID })
@@ -1092,7 +1122,7 @@ final class AppState {
         let sessionUsesCodexProtocolRuntime = tool == .codex && isCodexProtocolModeEnabled
         let requiresCodexProtocolBootstrap = sessionUsesCodexProtocolRuntime && runner is CLIGhosttyTerminalRunner
 
-        let terminalEnvironmentValues = terminalEnvironment()
+        var terminalEnvironmentValues = terminalEnvironment()
         var launchExecutable = executable
         var launchArguments = arguments
         var codexConversationID: String?
@@ -1158,17 +1188,34 @@ final class AppState {
         terminalSessionOrder.removeAll { $0 == sessionID }
         terminalSessionOrder.append(sessionID)
         selectedTerminalSessionID = sessionID
-        if sessionUsesCodexProtocolRuntime {
-            terminalRuntimeStates.removeValue(forKey: sessionID)
-        } else {
-            terminalRuntimeStates[sessionID] = .working
-        }
+        applyRuntimeStateIfNeeded(
+            sessionUsesCodexProtocolRuntime ? .syncing : .working,
+            source: .lifecycle,
+            for: sessionID
+        )
         persistTerminalWorkspaceSnapshotIfNeeded()
+
+        let ipcSocketPath = startRuntimeIPCServer(for: sessionID, tool: tool)
+        if let ipcSocketPath {
+            terminalEnvironmentValues["AGENTOS_IPC_PATH"] = ipcSocketPath
+        }
+        let runtimeLaunch = wrappedTerminalLaunchCommand(
+            tool: tool,
+            baseExecutable: launchExecutable,
+            baseArguments: launchArguments,
+            ipcSocketPath: ipcSocketPath,
+            transcriptFilePath: transcriptFilePath,
+            sessionUsesCodexProtocolRuntime: sessionUsesCodexProtocolRuntime
+        )
+        var usesWrapperRuntimeSignals = runtimeLaunch.usesNodeWrapper
 
         let outputBuffer = session.outputBuffer
         runner.onOutput = { [weak self] raw in
             outputBuffer.append(raw)
             if sessionUsesCodexProtocolRuntime {
+                return
+            }
+            guard !usesWrapperRuntimeSignals else {
                 return
             }
             guard !usesRuntimeHinting else {
@@ -1180,7 +1227,11 @@ final class AppState {
                 return
             }
             Task { @MainActor in
-                self?.setRuntimeStateIfNeeded(detectedState, for: sessionID)
+                self?.applyRuntimeStateIfNeeded(
+                    detectedState,
+                    source: .heuristicOutput,
+                    for: sessionID
+                )
             }
         }
         runner.onWorkingDirectoryChange = { [weak self] directory in
@@ -1205,17 +1256,26 @@ final class AppState {
         }
 
         do {
-            let runtimeLaunch = wrappedTerminalLaunchCommand(
-                baseExecutable: launchExecutable,
-                baseArguments: launchArguments,
-                transcriptFilePath: transcriptFilePath
-            )
-            try runner.start(
-                executable: runtimeLaunch.executable,
-                arguments: runtimeLaunch.arguments,
-                workingDirectory: workingDirectory,
-                environment: terminalEnvironmentValues
-            )
+            do {
+                try runner.start(
+                    executable: runtimeLaunch.executable,
+                    arguments: runtimeLaunch.arguments,
+                    workingDirectory: workingDirectory,
+                    environment: terminalEnvironmentValues
+                )
+            } catch {
+                guard runtimeLaunch.usesNodeWrapper else {
+                    throw error
+                }
+                usesWrapperRuntimeSignals = false
+                append(actor: "System", message: "Node Wrapper 启动失败，已回退直连模式：\(error.localizedDescription)")
+                try runner.start(
+                    executable: launchExecutable,
+                    arguments: launchArguments,
+                    workingDirectory: workingDirectory,
+                    environment: terminalEnvironmentValues
+                )
+            }
             terminalRunners[sessionID] = runner
             if requiresCodexProtocolBootstrap, runner is CLIGhosttyTerminalRunner {
                 guard let codexConversationID else {
@@ -1368,14 +1428,104 @@ final class AppState {
     }
 
     private func wrappedTerminalLaunchCommand(
+        tool: ProgrammingTool,
         baseExecutable: String,
         baseArguments: [String],
-        transcriptFilePath: String?
-    ) -> (executable: String, arguments: [String]) {
+        ipcSocketPath: String?,
+        transcriptFilePath: String?,
+        sessionUsesCodexProtocolRuntime: Bool
+    ) -> TerminalRuntimeLaunchCommand {
         // Keep Ghostty session attached to the native PTY directly.
         // Wrapping with `/usr/bin/script` hurts TUI resize fidelity.
         _ = transcriptFilePath
-        return (baseExecutable, baseArguments)
+
+        guard !sessionUsesCodexProtocolRuntime else {
+            return TerminalRuntimeLaunchCommand(
+                executable: baseExecutable,
+                arguments: baseArguments,
+                usesNodeWrapper: false
+            )
+        }
+        guard let ipcSocketPath else {
+            return TerminalRuntimeLaunchCommand(
+                executable: baseExecutable,
+                arguments: baseArguments,
+                usesNodeWrapper: false
+            )
+        }
+        guard shouldUseNodeWrapper(
+            for: tool,
+            executable: baseExecutable,
+            arguments: baseArguments
+        ) else {
+            return TerminalRuntimeLaunchCommand(
+                executable: baseExecutable,
+                arguments: baseArguments,
+                usesNodeWrapper: false
+            )
+        }
+
+        guard let wrapperPath = try? AgentNodeWrapperScript.ensureInstalled() else {
+            append(actor: "System", message: "Node Wrapper 写入失败，已回退直连模式。")
+            return TerminalRuntimeLaunchCommand(
+                executable: baseExecutable,
+                arguments: baseArguments,
+                usesNodeWrapper: false
+            )
+        }
+
+        let wrapperArguments = [
+            "node",
+            wrapperPath,
+            "--ipc-path",
+            ipcSocketPath,
+            "--tool",
+            tool.rawValue,
+            "--",
+            baseExecutable,
+        ] + baseArguments
+
+        return TerminalRuntimeLaunchCommand(
+            executable: "/usr/bin/env",
+            arguments: wrapperArguments,
+            usesNodeWrapper: true
+        )
+    }
+
+    private func shouldUseNodeWrapper(
+        for tool: ProgrammingTool,
+        executable: String,
+        arguments: [String]
+    ) -> Bool {
+        let wrapperSupportedTools: Set<ProgrammingTool> = [
+            .codex,
+            .claudeCode,
+            .qwenCode,
+            .opencode,
+        ]
+        guard wrapperSupportedTools.contains(tool) else {
+            return false
+        }
+        return isDirectToolLaunch(for: tool, executable: executable, arguments: arguments)
+    }
+
+    private func isDirectToolLaunch(
+        for tool: ProgrammingTool,
+        executable: String,
+        arguments: [String]
+    ) -> Bool {
+        let normalizedExecutable = normalizedExecutableCommand(executable)
+        let candidateSet = Set(tool.candidates.map { $0.lowercased() })
+        if candidateSet.contains(normalizedExecutable) {
+            return true
+        }
+
+        if normalizedExecutable == "env",
+           let firstArgument = arguments.first {
+            return candidateSet.contains(normalizedExecutableCommand(firstArgument))
+        }
+
+        return false
     }
 
     private func prepareTerminalTranscriptFilePath(
@@ -1486,6 +1636,69 @@ final class AppState {
         return environment
     }
 
+    private func startRuntimeIPCServer(for sessionID: UUID, tool _: ProgrammingTool) -> String? {
+        stopRuntimeIPCServer(for: sessionID)
+        let socketPath = runtimeSocketPath(for: sessionID)
+
+        let server = AgentRuntimeIPCServer(
+            configuration: .init(
+                socketPath: socketPath,
+                onEvent: { [weak self] event in
+                    Task { @MainActor in
+                        self?.handleRuntimeIPCEvent(event, sessionID: sessionID)
+                    }
+                },
+                onError: { [weak self] message in
+                    Task { @MainActor in
+                        self?.append(actor: "System", message: "Runtime IPC: \(message)")
+                    }
+                }
+            )
+        )
+
+        do {
+            try server.start()
+            terminalIPCServers[sessionID] = server
+            terminalIPCSocketPaths[sessionID] = socketPath
+            return socketPath
+        } catch {
+            append(actor: "System", message: "Runtime IPC 启动失败：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func stopRuntimeIPCServer(for sessionID: UUID) {
+        if let server = terminalIPCServers.removeValue(forKey: sessionID) {
+            server.stop()
+        }
+        if let socketPath = terminalIPCSocketPaths.removeValue(forKey: sessionID) {
+            unlink(socketPath)
+        }
+        terminalPendingApprovals.removeValue(forKey: sessionID)
+    }
+
+    private func runtimeSocketPath(for sessionID: UUID) -> String {
+        let shortID = String(sessionID.uuidString.prefix(8)).lowercased()
+        return "/tmp/agentos-ipc-\(shortID).sock"
+    }
+
+    private func handleRuntimeIPCEvent(_ event: AgentRuntimeIPCEvent, sessionID: UUID) {
+        applyRuntimeStateIfNeeded(event.runtimeState, source: .wrapperIPC, for: sessionID)
+
+        if event.status == .approving {
+            let prompt = event.approvalPrompt
+                ?? event.message
+                ?? "CLI 请求授权执行本次操作。"
+            terminalPendingApprovals[sessionID] = TerminalApprovalRequest(
+                prompt: prompt,
+                receivedAt: Date()
+            )
+            return
+        }
+
+        terminalPendingApprovals.removeValue(forKey: sessionID)
+    }
+
     private func startCodexAppServerMonitor(
         for sessionID: UUID,
         conversationID: String,
@@ -1503,12 +1716,21 @@ final class AppState {
                 environment: environment,
                 onRuntimeState: { [weak self] runtimeState in
                     Task { @MainActor in
-                        self?.setRuntimeStateIfNeeded(runtimeState, for: sessionID)
+                        self?.applyRuntimeStateIfNeeded(
+                            runtimeState,
+                            source: .protocolEvent,
+                            for: sessionID
+                        )
                     }
                 },
                 onError: { [weak self] message in
                     Task { @MainActor in
                         guard let self else { return }
+                        self.applyRuntimeStateIfNeeded(
+                            .unknown,
+                            source: .protocolEvent,
+                            for: sessionID
+                        )
                         self.append(actor: "System", message: message)
                     }
                 }
@@ -1550,6 +1772,7 @@ final class AppState {
 
     private func handleTerminalExit(sessionID: UUID, exitCode: Int32) {
         stopCodexAppServerMonitor(for: sessionID)
+        stopRuntimeIPCServer(for: sessionID)
         if let runner = terminalRunners[sessionID] as? CLIGhosttyTerminalRunner {
             persistGhosttySnapshotIfNeeded(from: runner, sessionID: sessionID)
         }
@@ -1574,6 +1797,7 @@ final class AppState {
 
     private func markTerminalSessionAsFailed(_ sessionID: UUID, error: Error) {
         stopCodexAppServerMonitor(for: sessionID)
+        stopRuntimeIPCServer(for: sessionID)
         let errorLine = "\n[\(timestampPrefix())] 启动失败：\(error.localizedDescription)"
         terminalSession(for: sessionID)?.outputBuffer.append(Data(errorLine.utf8))
 
@@ -1596,18 +1820,65 @@ final class AppState {
         terminalSessions[index] = session
     }
 
+    private func resolvePendingTerminalApproval(_ sessionID: UUID, approved: Bool) {
+        guard terminalPendingApprovals[sessionID] != nil else {
+            return
+        }
+        terminalPendingApprovals.removeValue(forKey: sessionID)
+        let answer = approved ? "y" : "n"
+        sendTerminalData(Data((answer + "\n").utf8), to: sessionID, lastInput: answer)
+        applyRuntimeStateIfNeeded(.working, source: .lifecycle, for: sessionID)
+    }
+
     private func applyRuntimeStateHint(_ runtimeState: TerminalSessionRuntimeState, for sessionID: UUID) {
-        setRuntimeStateIfNeeded(runtimeState, for: sessionID)
+        applyRuntimeStateIfNeeded(runtimeState, source: .runtimeHint, for: sessionID)
     }
 
     private func setRuntimeStateIfNeeded(_ runtimeState: TerminalSessionRuntimeState, for sessionID: UUID) {
+        applyRuntimeStateIfNeeded(runtimeState, source: .lifecycle, for: sessionID)
+    }
+
+    private func isFinalRuntimeState(_ runtimeState: TerminalSessionRuntimeState) -> Bool {
+        switch runtimeState {
+        case .completedSuccess, .completedFailure, .restoredStopped, .stopped:
+            return true
+        case .syncing, .working, .waitingUserInput, .waitingApproval, .unknown:
+            return false
+        }
+    }
+
+    private func applyRuntimeStateIfNeeded(
+        _ runtimeState: TerminalSessionRuntimeState,
+        source: TerminalRuntimeSignalSource,
+        for sessionID: UUID
+    ) {
         guard terminalSessions.contains(where: { $0.id == sessionID }) else {
             stopCodexAppServerMonitor(for: sessionID)
+            stopRuntimeIPCServer(for: sessionID)
             terminalRuntimeStates.removeValue(forKey: sessionID)
+            terminalRuntimeStateSources.removeValue(forKey: sessionID)
+            terminalPendingApprovals.removeValue(forKey: sessionID)
             return
         }
-        guard terminalRuntimeStates[sessionID] != runtimeState else { return }
+
+        if let existingSource = terminalRuntimeStateSources[sessionID],
+           let existingState = terminalRuntimeStates[sessionID],
+           source.priority < existingSource.priority,
+           !isFinalRuntimeState(existingState),
+           !(existingSource == .lifecycle) {
+            return
+        }
+
+        if terminalRuntimeStates[sessionID] == runtimeState,
+           terminalRuntimeStateSources[sessionID] == source {
+            return
+        }
+
         terminalRuntimeStates[sessionID] = runtimeState
+        terminalRuntimeStateSources[sessionID] = source
+        if runtimeState != .waitingApproval {
+            terminalPendingApprovals.removeValue(forKey: sessionID)
+        }
     }
 
     static func truncateTerminalOutput(_ output: String, maxCharacters: Int) -> String {
@@ -1738,6 +2009,8 @@ final class AppState {
             )
         }
         terminalRuntimeStates = [:]
+        terminalRuntimeStateSources = [:]
+        terminalPendingApprovals = [:]
 
         terminalSessions = snapshot.sessions.compactMap { stored in
             guard let tool = ProgrammingTool(rawValue: stored.tool) else { return nil }
