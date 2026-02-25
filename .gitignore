@@ -17,3 +17,4 @@ Sources/
 *.pbxproj
 metal/
 Metal.x
+.idea/
