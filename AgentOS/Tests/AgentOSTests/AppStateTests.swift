@@ -260,7 +260,8 @@ struct AppStateTests {
         let state = AppState(
             detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
             terminalRunnerFactory: { runner },
-            terminalOutputFlushDelayNanos: 1
+            terminalOutputFlushDelayNanos: 1,
+            isNodeWrapperRuntimeEnabled: false
         )
 
         state.installations = [
@@ -291,7 +292,8 @@ struct AppStateTests {
         let state = AppState(
             detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
             terminalRunnerFactory: { runner },
-            terminalOutputFlushDelayNanos: 1
+            terminalOutputFlushDelayNanos: 1,
+            isNodeWrapperRuntimeEnabled: false
         )
 
         state.installations = [
@@ -323,7 +325,8 @@ struct AppStateTests {
         let state = AppState(
             detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
             terminalRunnerFactory: { runner },
-            terminalOutputFlushDelayNanos: 1
+            terminalOutputFlushDelayNanos: 1,
+            isNodeWrapperRuntimeEnabled: false
         )
 
         state.installations = [
@@ -378,12 +381,21 @@ struct AppStateTests {
     }
 
     @Test
+    func nodeWrapperScriptUsesPseudoTTYLauncher() throws {
+        let scriptPath = try AgentNodeWrapperScript.ensureInstalled()
+        let scriptContent = try String(contentsOfFile: scriptPath, encoding: .utf8)
+        #expect(scriptContent.contains("spawn('/usr/bin/script'"))
+        #expect(scriptContent.contains("stdio: ['inherit', 'pipe', 'pipe']"))
+    }
+
+    @Test
     func lifecycleStateOverridesHeuristicStateWhenSessionEnds() async {
         let runner = MockTerminalRunner()
         let state = AppState(
             detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
             terminalRunnerFactory: { runner },
-            terminalOutputFlushDelayNanos: 1
+            terminalOutputFlushDelayNanos: 1,
+            isNodeWrapperRuntimeEnabled: false
         )
 
         state.installations = [

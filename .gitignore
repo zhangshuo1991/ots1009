@@ -13,7 +13,6 @@ Frameworks/
 *.xcodeproj/xcshareddata/
 *.xcodeproj/xcuser
 Contents/
-Sources/
 *.pbxproj
 metal/
 Metal.x

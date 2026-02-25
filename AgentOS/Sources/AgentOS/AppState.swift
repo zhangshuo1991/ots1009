@@ -85,6 +85,7 @@ final class AppState {
     private let maxPersistedTerminalSessions = 40
     private let maxRecentlyClosedTerminalSessions = 20
     private let maxRecentQuickLaunchCommands = 8
+    private let isNodeWrapperRuntimeEnabled: Bool
     // Rollback: keep Codex in classic terminal mode by default.
     // Protocol-driven mode can be re-enabled later after stability validation.
     private let isCodexProtocolModeEnabled = false
@@ -153,7 +154,8 @@ final class AppState {
         terminalOutputFlushDelayNanos: UInt64 = 16_000_000,
         userDefaults: UserDefaults = .standard,
         terminalWorkspaceSnapshotStorageKey: String = "agentos.terminal.workspace.snapshot.v1",
-        isTerminalWorkspacePersistenceEnabled: Bool = false
+        isTerminalWorkspacePersistenceEnabled: Bool = false,
+        isNodeWrapperRuntimeEnabled: Bool = ProcessInfo.processInfo.environment["AGENTOS_ENABLE_NODE_WRAPPER"] != "0"
     ) {
         self.detectionService = detectionService
         self.installationService = installationService
@@ -166,6 +168,7 @@ final class AppState {
         self.userDefaults = userDefaults
         self.terminalWorkspaceSnapshotStorageKey = terminalWorkspaceSnapshotStorageKey
         self.isTerminalWorkspacePersistenceEnabled = isTerminalWorkspacePersistenceEnabled
+        self.isNodeWrapperRuntimeEnabled = isNodeWrapperRuntimeEnabled
 
         self.terminalNotificationService.requestAuthorizationIfNeeded()
         restoreTerminalWorkspaceSnapshotIfNeeded()
@@ -1195,9 +1198,20 @@ final class AppState {
         )
         persistTerminalWorkspaceSnapshotIfNeeded()
 
-        let ipcSocketPath = startRuntimeIPCServer(for: sessionID, tool: tool)
-        if let ipcSocketPath {
-            terminalEnvironmentValues["AGENTOS_IPC_PATH"] = ipcSocketPath
+        let shouldAttachNodeWrapper = !sessionUsesCodexProtocolRuntime && shouldUseNodeWrapper(
+            for: tool,
+            executable: launchExecutable,
+            arguments: launchArguments
+        )
+        let ipcSocketPath: String?
+        if shouldAttachNodeWrapper {
+            let socketPath = startRuntimeIPCServer(for: sessionID, tool: tool)
+            if let socketPath {
+                terminalEnvironmentValues["AGENTOS_IPC_PATH"] = socketPath
+            }
+            ipcSocketPath = socketPath
+        } else {
+            ipcSocketPath = nil
         }
         let runtimeLaunch = wrappedTerminalLaunchCommand(
             tool: tool,
@@ -1268,6 +1282,8 @@ final class AppState {
                     throw error
                 }
                 usesWrapperRuntimeSignals = false
+                stopRuntimeIPCServer(for: sessionID)
+                terminalEnvironmentValues.removeValue(forKey: "AGENTOS_IPC_PATH")
                 append(actor: "System", message: "Node Wrapper 启动失败，已回退直连模式：\(error.localizedDescription)")
                 try runner.start(
                     executable: launchExecutable,
@@ -1497,6 +1513,9 @@ final class AppState {
         executable: String,
         arguments: [String]
     ) -> Bool {
+        guard isNodeWrapperRuntimeEnabled else {
+            return false
+        }
         let wrapperSupportedTools: Set<ProgrammingTool> = [
             .codex,
             .claudeCode,
@@ -1523,6 +1542,10 @@ final class AppState {
         if normalizedExecutable == "env",
            let firstArgument = arguments.first {
             return candidateSet.contains(normalizedExecutableCommand(firstArgument))
+        }
+
+        if normalizedExecutable == "env", arguments.isEmpty, tool == .codex {
+            return true
         }
 
         return false
