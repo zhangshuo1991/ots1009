@@ -64,6 +64,7 @@ enum TerminalRuntimeSignalSource: String, Codable, Sendable {
     case wrapperIPC
     case runtimeHint
     case heuristicOutput
+    case userInput
     case fallback
 
     var priority: Int {
@@ -78,6 +79,8 @@ enum TerminalRuntimeSignalSource: String, Codable, Sendable {
             return 600
         case .heuristicOutput:
             return 400
+        case .userInput:
+            return 150
         case .fallback:
             return 100
         }
@@ -95,6 +98,8 @@ enum TerminalRuntimeSignalSource: String, Codable, Sendable {
             return "Hint"
         case .heuristicOutput:
             return "文本"
+        case .userInput:
+            return "输入"
         case .fallback:
             return "默认"
         }

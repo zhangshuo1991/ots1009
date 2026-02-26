@@ -904,9 +904,7 @@ final class AppState {
             session.lastInput = lastInput
             session.updatedAt = Date()
         }
-        if terminalSession(for: sessionID)?.tool != .codex {
-            setRuntimeStateIfNeeded(.working, for: sessionID)
-        }
+        applyRuntimeStateIfNeeded(.working, source: .userInput, for: sessionID)
     }
 
     /// Returns the Ghostty terminal runner for a session.
@@ -1262,6 +1260,9 @@ final class AppState {
             runtimeHintRunner.onRuntimeStateHint = { [weak self] runtimeState in
                 Task { @MainActor in
                     guard !sessionUsesCodexProtocolRuntime else {
+                        return
+                    }
+                    guard !usesWrapperRuntimeSignals else {
                         return
                     }
                     self?.applyRuntimeStateHint(runtimeState, for: sessionID)
@@ -1850,7 +1851,6 @@ final class AppState {
         terminalPendingApprovals.removeValue(forKey: sessionID)
         let answer = approved ? "y" : "n"
         sendTerminalData(Data((answer + "\n").utf8), to: sessionID, lastInput: answer)
-        applyRuntimeStateIfNeeded(.working, source: .lifecycle, for: sessionID)
     }
 
     private func applyRuntimeStateHint(_ runtimeState: TerminalSessionRuntimeState, for sessionID: UUID) {
@@ -1870,6 +1870,51 @@ final class AppState {
         }
     }
 
+    private func shouldPreferIncomingRuntimeState(
+        _ incomingState: TerminalSessionRuntimeState,
+        over existingState: TerminalSessionRuntimeState
+    ) -> Bool {
+        if isFinalRuntimeState(incomingState) {
+            return true
+        }
+
+        switch incomingState {
+        case .waitingApproval:
+            return existingState == .working
+                || existingState == .syncing
+                || existingState == .unknown
+                || existingState == .waitingUserInput
+        case .waitingUserInput:
+            return existingState == .working
+                || existingState == .syncing
+                || existingState == .unknown
+        case .syncing, .working, .unknown, .completedSuccess, .completedFailure, .restoredStopped, .stopped:
+            return false
+        }
+    }
+
+    private func shouldKeepExistingWaitingState(
+        _ existingState: TerminalSessionRuntimeState,
+        incomingState: TerminalSessionRuntimeState,
+        source: TerminalRuntimeSignalSource
+    ) -> Bool {
+        guard existingState == .waitingUserInput || existingState == .waitingApproval else {
+            return false
+        }
+        guard !isFinalRuntimeState(incomingState) else {
+            return false
+        }
+
+        switch incomingState {
+        case .waitingUserInput, .waitingApproval:
+            return false
+        case .working, .syncing, .unknown:
+            return source != .userInput && source != .protocolEvent
+        case .completedSuccess, .completedFailure, .restoredStopped, .stopped:
+            return false
+        }
+    }
+
     private func applyRuntimeStateIfNeeded(
         _ runtimeState: TerminalSessionRuntimeState,
         source: TerminalRuntimeSignalSource,
@@ -1884,10 +1929,30 @@ final class AppState {
             return
         }
 
+        if let existingState = terminalRuntimeStates[sessionID],
+           shouldKeepExistingWaitingState(
+               existingState,
+               incomingState: runtimeState,
+               source: source
+           ) {
+            return
+        }
+
+        let isUserInputResumingWaitingState: Bool
+        if let existingState = terminalRuntimeStates[sessionID] {
+            isUserInputResumingWaitingState = source == .userInput
+                && runtimeState == .working
+                && (existingState == .waitingUserInput || existingState == .waitingApproval)
+        } else {
+            isUserInputResumingWaitingState = false
+        }
+
         if let existingSource = terminalRuntimeStateSources[sessionID],
            let existingState = terminalRuntimeStates[sessionID],
            source.priority < existingSource.priority,
+           !isUserInputResumingWaitingState,
            !isFinalRuntimeState(existingState),
+           !shouldPreferIncomingRuntimeState(runtimeState, over: existingState),
            !(existingSource == .lifecycle) {
             return
         }

@@ -467,8 +467,108 @@ struct AppStateTests {
         #expect(state.pendingApprovalRequest(for: sessionID)?.prompt == "Allow this command?")
 
         state.approvePendingTerminalAction(sessionID)
+        await Task.yield()
         #expect(runner.sentInputs.last == "y\n")
         #expect(state.pendingApprovalRequest(for: sessionID) == nil)
+        #expect(state.terminalRuntimeState(for: sessionID) == .working)
+        #expect(state.runtimeStateSource(for: sessionID) == .userInput)
+    }
+
+    @Test
+    func runtimeHintIsIgnoredWhenWrapperSignalsAreActive() async throws {
+        let runner = MockRuntimeHintTrackingRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .codex,
+                binaryPath: "/usr/bin/env",
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/codex",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        guard let sessionID = state.createTerminalSession(for: .codex, workingDirectory: workspace) else {
+            Issue.record("会话创建失败")
+            return
+        }
+        guard let socketPath = runner.startedEnvironment["AGENTOS_IPC_PATH"], !socketPath.isEmpty else {
+            Issue.record("缺少 AGENTOS_IPC_PATH")
+            return
+        }
+
+        try sendRuntimeIPCEvent(
+            socketPath: socketPath,
+            line: #"{"status":"thinking","message":"wrapper_spawn"}"#
+        )
+        try? await Task.sleep(nanoseconds: 160_000_000)
+        #expect(state.terminalRuntimeState(for: sessionID) == .working)
+        #expect(state.runtimeStateSource(for: sessionID) == .wrapperIPC)
+
+        runner.emitRuntimeHint(.waitingUserInput)
+        await Task.yield()
+        #expect(state.terminalRuntimeState(for: sessionID) == .working)
+        #expect(state.runtimeStateSource(for: sessionID) == .wrapperIPC)
+    }
+
+    @Test
+    func wrapperWaitingUserInputRemainsStableUntilUserInputArrives() async throws {
+        let runner = MockTerminalRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .codex,
+                binaryPath: "/usr/bin/env",
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/codex",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        guard let sessionID = state.createTerminalSession(for: .codex, workingDirectory: workspace) else {
+            Issue.record("会话创建失败")
+            return
+        }
+        guard let socketPath = runner.startedEnvironment["AGENTOS_IPC_PATH"], !socketPath.isEmpty else {
+            Issue.record("缺少 AGENTOS_IPC_PATH")
+            return
+        }
+
+        try sendRuntimeIPCEvent(
+            socketPath: socketPath,
+            line: #"{"status":"awaiting_user","message":"prompt"}"#
+        )
+        try? await Task.sleep(nanoseconds: 160_000_000)
+        #expect(state.terminalRuntimeState(for: sessionID) == .waitingUserInput)
+        #expect(state.runtimeStateSource(for: sessionID) == .wrapperIPC)
+
+        try sendRuntimeIPCEvent(
+            socketPath: socketPath,
+            line: #"{"status":"thinking","message":"spurious"}"#
+        )
+        try? await Task.sleep(nanoseconds: 160_000_000)
+        #expect(state.terminalRuntimeState(for: sessionID) == .waitingUserInput)
+        #expect(state.runtimeStateSource(for: sessionID) == .wrapperIPC)
+
+        state.sendTerminalInput("continue", to: sessionID)
+        await Task.yield()
+        #expect(runner.sentInputs.last == "continue\n")
+        #expect(state.terminalRuntimeState(for: sessionID) == .working)
+        #expect(state.runtimeStateSource(for: sessionID) == .userInput)
     }
 
     @Test
@@ -504,6 +604,39 @@ struct AppStateTests {
         runner.emitRuntimeHint(.waitingUserInput)
         await Task.yield()
         #expect(state.terminalRuntimeState(for: sessionID) == .waitingUserInput)
+    }
+
+    @Test
+    func sendTerminalInputUsesLowestPriorityWorkingState() async {
+        let runner = MockTerminalRunner()
+        let state = AppState(
+            detectionService: CLIDetectionService(environment: ["PATH": ""], commandRunner: { _, _ in "" }, fallbackDirectories: []),
+            terminalRunnerFactory: { runner },
+            terminalOutputFlushDelayNanos: 1
+        )
+
+        state.installations = [
+            ToolInstallation(
+                tool: .claudeCode,
+                binaryPath: "/usr/bin/env",
+                isInstalled: true,
+                installMethod: .npm,
+                installLocation: "/tmp/claude",
+                version: "1.0.0"
+            )
+        ]
+
+        let workspace = FileManager.default.temporaryDirectory.path
+        guard let sessionID = state.createTerminalSession(for: .claudeCode, workingDirectory: workspace) else {
+            Issue.record("会话创建失败")
+            return
+        }
+
+        state.sendTerminalInput("help", to: sessionID)
+        await Task.yield()
+
+        #expect(state.terminalRuntimeState(for: sessionID) == .working)
+        #expect(state.runtimeStateSource(for: sessionID) == .userInput)
     }
 
     @Test
@@ -1555,6 +1688,40 @@ private final class MockRuntimeHintRunner: RuntimeStateHintingTerminalRunner {
     func send(data: Data) {}
 
     func resize(cols: Int, rows: Int) {}
+
+    func terminate() {}
+
+    func emitRuntimeHint(_ state: TerminalSessionRuntimeState) {
+        onRuntimeStateHint?(state)
+    }
+}
+
+private final class MockRuntimeHintTrackingRunner: RuntimeStateHintingTerminalRunner {
+    var onOutput: ((Data) -> Void)?
+    var onWorkingDirectoryChange: ((String?) -> Void)?
+    var onExit: ((Int32) -> Void)?
+    var onRuntimeStateHint: ((TerminalSessionRuntimeState) -> Void)?
+
+    private(set) var startedExecutable: String?
+    private(set) var startedArguments: [String] = []
+    private(set) var startedWorkingDirectory: String = ""
+    private(set) var startedEnvironment: [String: String] = [:]
+
+    func start(
+        executable: String,
+        arguments: [String],
+        workingDirectory: String,
+        environment: [String: String]
+    ) throws {
+        startedExecutable = executable
+        startedArguments = arguments
+        startedWorkingDirectory = workingDirectory
+        startedEnvironment = environment
+    }
+
+    func send(data _: Data) {}
+
+    func resize(cols _: Int, rows _: Int) {}
 
     func terminate() {}
 

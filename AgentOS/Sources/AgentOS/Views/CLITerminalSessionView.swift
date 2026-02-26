@@ -1217,6 +1217,8 @@ struct CLITerminalSessionWindowView: View {
             return DesignTokens.ColorToken.statusWarning
         case .heuristicOutput:
             return DesignTokens.ColorToken.terminalTextMuted
+        case .userInput:
+            return DesignTokens.ColorToken.terminalTextSecondary.opacity(0.9)
         case .lifecycle:
             return DesignTokens.ColorToken.terminalTextSecondary
         case .fallback:
